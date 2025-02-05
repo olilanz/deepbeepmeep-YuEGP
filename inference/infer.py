@@ -23,10 +23,11 @@ from mmtokenizer import _MMSentencePieceTokenizer
 from models.soundstream_hubert_new import SoundStream
 from vocoder import build_codec_model, process_audio
 from post_process_audio import replace_low_freq_with_energy_matched
+
 parser = argparse.ArgumentParser()
 # Model Configuration:
-parser.add_argument("--stage1_model", type=str, default="m-a-p/YuE-s1-7B-anneal-en-cot", help="The model checkpoint path or identifier for the Stage 1 model.")
-parser.add_argument("--stage2_model", type=str, default="m-a-p/YuE-s2-1B-general", help="The model checkpoint path or identifier for the Stage 2 model.")
+#parser.add_argument("--stage1_model", type=str, default="m-a-p/YuE-s1-7B-anneal-en-cot", help="The model checkpoint path or identifier for the Stage 1 model.")
+#parser.add_argument("--stage2_model", type=str, default="m-a-p/YuE-s2-1B-general", help="The model checkpoint path or identifier for the Stage 2 model.")
 parser.add_argument("--max_new_tokens", type=int, default=3000, help="The maximum number of new tokens to generate in one pass during text generation.")
 parser.add_argument("--run_n_segments", type=int, default=2, help="The number of segments to process during the generation.")
 parser.add_argument("--stage2_batch_size", type=int, default=4, help="The batch size used in Stage 2 inference.")
@@ -70,14 +71,14 @@ if use_icl:
 else:
     args.stage1_model="m-a-p/YuE-s1-7B-anneal-en-cot"
 
-args.stage2_model="m-a-p/YuE-s2-1B-general"
-args.genre_txt="prompt_examples/genrerock.txt"
-args.lyrics_txt="prompt_examples/lastxmas.txt"
-args.run_n_segments=2
+#args.stage2_model="m-a-p/YuE-s2-1B-general"
+#args.genre_txt="prompt_examples/genrerock.txt"
+#args.lyrics_txt="prompt_examples/lastxmas.txt"
+#args.run_n_segments=2
 args.stage2_batch_size=12 if profile==1 else 4
-args.output_dir= "./output"
-args.cuda_idx =  0
-args.max_new_tokens = 3000 
+#args.output_dir= "./output"
+#args.cuda_idx =  0
+#args.max_new_tokens = 3000 
 
 if sdpa:
     attn_implementation="sdpa"
