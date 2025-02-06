@@ -79,7 +79,8 @@ args.stage2_model="m-a-p/YuE-s2-1B-general"
 args.genre_txt="prompt_examples/genrerock.txt"
 args.lyrics_txt="prompt_examples/lastxmas.txt"
 args.run_n_segments=2
-args.stage2_batch_size=12 if profile == 1 else 4 
+
+args.stage2_batch_size= [12,12,12,4,3,2][profile]   
 args.output_dir= "./output"
 args.cuda_idx =  0
 args.max_new_tokens = 3000 
@@ -89,7 +90,7 @@ if sdpa:
 else:
     attn_implementation="flash_attention_2"
 
-
+args.stage2_batch_size = 4
 
 if args.use_audio_prompt and not args.audio_prompt_path:
     raise FileNotFoundError("Please offer audio prompt filepath using '--audio_prompt_path', when you enable 'use_audio_prompt'!")
@@ -137,7 +138,10 @@ codec_model.load_state_dict(parameter_dict['codec_model'])
 codec_model.to(device)
 codec_model.eval()
 kwargs  = {}
-if profile == 4 :
+if profile == 5 :
+    kwargs["budgets"] =  { "transformer": 500, "*" : 3000 }
+    kwargs["pinnedMemory"] = True
+elif profile == 4 :
     kwargs["budgets"] =  { "transformer": 3000, "*" : 5000 }
 elif profile == 2:
     kwargs["budgets"] =  5000
@@ -147,9 +151,13 @@ offload.profile(pipe, profile_no = profile,  compile = compile, quantizeTransfor
 class BlockTokenRangeProcessor(LogitsProcessor):
     def __init__(self, start_id, end_id):
         self.blocked_token_ids = list(range(start_id, end_id))
+        self.start_id = start_id
+        self.end_id = end_id
 
     def __call__(self, input_ids, scores):
-        scores[:, self.blocked_token_ids] = -float("inf")
+        # scores[:, self.blocked_token_ids] = -float("inf")
+        scores[:, self.start_id : self.end_id] = -float("inf")
+
         return scores
 
 def load_audio_mono(filepath, sampling_rate=16000):
@@ -203,7 +211,6 @@ def generate_song(genres_input, lyrics_input, run_n_segments, seed, max_new_toke
 
 
     # return "output/cot_inspiring-female-uplifting-pop-airy-vocal-electronic-bright-vocal-vocal_tp0@93_T1@0_rp1@2_maxtk3000_mixed_e0a99c45-7f63-41c9-826f-9bde7417db4c.mp3"
-    stage1_output_set = []
     # Tips:
     # genre tags support instrumental，genre，mood，vocal timbr and vocal gender
     # all kinds of tags are needed
@@ -233,12 +240,11 @@ def generate_song(genres_input, lyrics_input, run_n_segments, seed, max_new_toke
     start_of_segment = mmtokenizer.tokenize('[start_of_segment]')
     end_of_segment = mmtokenizer.tokenize('[end_of_segment]')
     # Format text prompt
-    run_n_segments = min(run_n_segments, len(lyrics)) +1
-    for i, p in enumerate(tqdm(prompt_texts[:run_n_segments])):
+    run_n_segments = min(run_n_segments, len(lyrics)) 
+    for i, p in enumerate(tqdm(prompt_texts[1:run_n_segments + 1]), 1):
+        print(f"---Stage 1: Generating Sequence {i} out of {run_n_segments}")
         section_text = p.replace('[start_of_segment]', '').replace('[end_of_segment]', '')
         guidance_scale = 1.5 if i <=1 else 1.2
-        if i==0:
-            continue
         if i==1:
             if args.use_dual_tracks_prompt or args.use_audio_prompt:
                 if args.use_dual_tracks_prompt:
@@ -287,9 +293,10 @@ def generate_song(genres_input, lyrics_input, run_n_segments, seed, max_new_toke
                 repetition_penalty=repetition_penalty, 
                 eos_token_id=mmtokenizer.eoa,
                 pad_token_id=mmtokenizer.eoa,
-                logits_processor=LogitsProcessorList([BlockTokenRangeProcessor(0, 32002), BlockTokenRangeProcessor(32016, 32016)]),
+                logits_processor=LogitsProcessorList([BlockTokenRangeProcessor(0, 32002), BlockTokenRangeProcessor(32016, 32017)]),
                 guidance_scale=guidance_scale,
                 )
+            torch.cuda.empty_cache()
             if output_seq[0][-1].item() != mmtokenizer.eoa:
                 tensor_eoa = torch.as_tensor([[mmtokenizer.eoa]]).to(model.device)
                 output_seq = torch.cat((output_seq, tensor_eoa), dim=1)
@@ -323,8 +330,13 @@ def generate_song(genres_input, lyrics_input, run_n_segments, seed, max_new_toke
     inst_save_path = os.path.join(stage1_output_dir, f"{genres.replace(' ', '-')}_tp{top_p}_T{temperature}_rp{repetition_penalty}_maxtk{max_new_tokens}_{random_id}_itrack".replace('.', '@')+'.npy')
     np.save(vocal_save_path, vocals)
     np.save(inst_save_path, instrumentals)
+    stage1_output_set = []
     stage1_output_set.append(vocal_save_path)
     stage1_output_set.append(inst_save_path)
+
+    # random_id ="5b4b4613-1cc2-4d84-af7a-243f853f168b"
+    # stage1_output_set = [ "output/stage1/inspiring-female-uplifting-pop-airy-vocal-electronic-bright-vocal_tp0@93_T1@0_rp1@2_maxtk3000_5b4b4613-1cc2-4d84-af7a-243f853f168b_vtrack.npy", 
+    #                       "output/stage1/inspiring-female-uplifting-pop-airy-vocal-electronic-bright-vocal_tp0@93_T1@0_rp1@2_maxtk3000_5b4b4613-1cc2-4d84-af7a-243f853f168b_itrack.npy"]
 
     def stage2_generate(model, prompt, batch_size=16):
         codec_ids = codectool.unflatten(prompt, n_quantizer=1)
@@ -367,8 +379,16 @@ def generate_song(genres_input, lyrics_input, run_n_segments, seed, max_new_toke
         block_list = LogitsProcessorList([BlockTokenRangeProcessor(0, 46358), BlockTokenRangeProcessor(53526, mmtokenizer.vocab_size)])
 
         # Teacher forcing generate loop
+        
+        max_tokens = codec_ids.shape[1] *8
+        i = 0
+        session_cache = { "real_max_length" : codec_ids.shape[1] *8 + prompt_ids.shape[1] }
+        codec_ids.shape[1]
         for frames_idx in range(codec_ids.shape[1]):
+            if i % 96 ==0 :
+                print(f"Tokens: {i} out of {max_tokens}")
             cb0 = codec_ids[:, frames_idx:frames_idx+1]
+            # print(f"insert cb0: {cb0}")
             prompt_ids = torch.cat([prompt_ids, cb0], dim=1)
             input_ids = prompt_ids
 
@@ -379,10 +399,15 @@ def generate_song(genres_input, lyrics_input, run_n_segments, seed, max_new_toke
                     eos_token_id=mmtokenizer.eoa,
                     pad_token_id=mmtokenizer.eoa,
                     logits_processor=block_list,
+                    session_cache = session_cache,
                 )
             
             assert stage2_output.shape[1] - prompt_ids.shape[1] == 7, f"output new tokens={stage2_output.shape[1]-prompt_ids.shape[1]}"
             prompt_ids = stage2_output
+            i+= 8
+
+        del session_cache
+        torch.cuda.empty_cache()
 
         # Return output based on batch size
         if batch_size > 1:
@@ -397,10 +422,16 @@ def generate_song(genres_input, lyrics_input, run_n_segments, seed, max_new_toke
     def stage2_inference(model, stage1_output_set, stage2_output_dir, batch_size=4):
         stage2_result = []
         for i in tqdm(range(len(stage1_output_set))):
+            if i==0:
+                print("---Stage 2.1: Sampling Vocal track")
+            else:
+                print("---Stage 2.2: Sampling Instrumental track")
+
             output_filename = os.path.join(stage2_output_dir, os.path.basename(stage1_output_set[i]))
             
-            if os.path.exists(output_filename):
+            if os.path.exists(output_filename) and False:
                 print(f'{output_filename} stage2 has done.')
+                stage2_result.append(output_filename)
                 continue
             
             # Load the prompt
@@ -412,6 +443,7 @@ def generate_song(genres_input, lyrics_input, run_n_segments, seed, max_new_toke
             
             if num_batch <= batch_size:
                 # If num_batch is less than or equal to batch_size, we can infer the entire prompt at once
+                print("Only one segment to process for this track")
                 output = stage2_generate(model, prompt[:, :output_duration*50], batch_size=num_batch)
             else:
                 # If num_batch is greater than batch_size, process in chunks of batch_size
@@ -419,6 +451,7 @@ def generate_song(genres_input, lyrics_input, run_n_segments, seed, max_new_toke
                 num_segments = (num_batch // batch_size) + (1 if num_batch % batch_size != 0 else 0)
 
                 for seg in range(num_segments):
+                    print(f"Segment {seg+1} / {num_segments}")
                     start_idx = seg * batch_size * 300
                     # Ensure the end_idx does not exceed the available length
                     end_idx = min((seg + 1) * batch_size * 300, output_duration*50)  # Adjust the last segment
@@ -553,7 +586,7 @@ def create_demo():
         gr.Markdown("<div align=center><H1>YuE<SUP>GP</SUP></H3></div>")
 
         gr.Markdown("<H1><DIV ALIGN=CENTER>YuE is a groundbreaking series of open-source foundation models designed for music generation, specifically for transforming lyrics into full songs (lyrics2song).</DIV></H1>")
-        gr.Markdown("<H2><B>GPU Poor version by DeepBeepMeep.</B> <A HREF='https://github.com/multimodal-art-projection/YuE'>Original Model</A></H2>")
+        gr.Markdown("<H2><B>GPU Poor version by DeepBeepMeep.</B> <A HREF='https://github.com/multimodal-art-projection/YuE'>Original Model</A>. Switch to profile 1 for turbo mode (requires a 16 GB VRAM GPU), 1 min of song will take only 4 minutes</H2>")
 
         if use_icl:
             gr.Markdown("<H3>With In Context Learning Mode in addition to the lyrics and genres info, you can provide audio prompts to describe your expectations. You can generate a song with either: </H3>")
@@ -573,9 +606,9 @@ def create_demo():
             with gr.Column():
                 # gen_status = gr.Text(label="Status", interactive= False) 
                 number_sequences = gr.Slider(1, 10, value=2, step=1, label="Number of Sequences (paragraphs in Lyrics, the higher this number, the higher the VRAM consumption)")
-                max_new_tokens = gr.Slider(100, 5000, value=3000, step=1, label="Max new tokens to process in a row (trade off quality / VRAM consumption ?)")
+                max_new_tokens = gr.Slider(100, 6000, value=3000, step=1, label="Number of tokens per sequence (1000 tokens = 10s, the higher this number, the higher the VRAM consumptions) ")
 
-                seed = gr.Slider(0, 999999999 , value=42, step=1, label="Seed (0 for random)")
+                seed = gr.Slider(0, 999999999 , value=123, step=1, label="Seed (0 for random)")
                 output = gr.Audio( label="Generated Song")
                 state = gr.State({})
                 generate_btn = gr.Button("Generate")
