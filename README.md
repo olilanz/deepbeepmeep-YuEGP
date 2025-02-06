@@ -65,6 +65,13 @@ cd inference
 python gradio_server.py --profile 4
 ```
 
+If some reason the system seems to be frozen you may be short in VRAM and your GPU is swapping inefficiently data between the RAM and the VRAM. Something consuming even less VRAM makes it faster, it is why I have added a profile 5 which has the minimum possible VRAM consumption:
+```bash
+cd inference
+python gradio_server.py --profile 5
+```
+
+
 If you have a Linux based system / Windows WSL or  were able to install Triton on Windows, you can also turn on Pytorch compilation with '--compile' for a faster generation.  
 ```bash
 cd inference
@@ -98,10 +105,13 @@ This application include two models: a text to world generator and a image / vid
 A flux derived image generator that will allow you to transfer an object of your choosing in a prompted scene. It is optimized to run with ony 6 GB of VRAM.
 
 ## News and Updates
-* **2025.01.30 🔥**: DeepBeepMeep: Added support for In Context Learning, now you can provide audio samples prompts to drive the song generation.
-* **2025.01.30 🔥**: DeepBeepMeep: Speed improvements for low VRAM profiles + patch for transformers library.
-* **2025.01.29 🔥**: DeepBeepMeep: GPU Poor version.
-* **2025.01.26 🔥**: We have released the **YuE** series.
+* **2025.02.06 🔥**: V2.2 DeepBeepMeep: forgot to remove test code that was slowing down profile 1 and 3
+* **2025.02.06 🔥**: V2.1 DeepBeepMeep: 3 times faster with 12+ GB VRAM GPUs (requires Flash Attention 2) thanks to a new optimized transformers libary. You will need to reapply the patchtransformers.sh. Generating a 1 min song takes now only 4 minutes on a RTX 4090 ! Added also progression info in terminal to provide feedback (pending real progression bars).
+
+* **2025.01.30 🔥**: V1.3 DeepBeepMeep: Added support for In Context Learning, now you can provide audio samples prompts to drive the song generation.
+* **2025.01.30 🔥**: V1.2 DeepBeepMeep: Speed improvements for low VRAM profiles + patch for transformers library.
+* **2025.01.29 🔥**: V1.1 DeepBeepMeep: GPU Poor version.
+* **2025.01.26 🔥**: V1.0 We have released the **YuE** series.
 
 <br>
 
@@ -154,8 +164,10 @@ For example, if you are using CUDA 12.4:
 **As an alternative if you were unable to install Flash attention (usually a pain on Windows) you can use sdpa attention instead by adding the *--sdpa* switch when running the gradio server. However this may consume more VRAM.**
 
 
-## 4) (optional) Transformers Patch for Low VRAM (< 10 GB of VRAM)
-If you have no choice but to use a low VRAM profile (profile 4), I am providing a patch for the transformers libray that should double the speed of the transformers libary (note this patch offers little little improvements on other profiles), this patch overwrites two files from the transformers libary. You can either copy and paste my 'transformers' folder in your venv or run the script below if the venv directory is just below the app directory:
+## 4) (optional) Transformers Patches for Low VRAM (< 10 GB of VRAM) and 2x faster genration with more than 16 GB of VRAM
+If you have no choice but to use a low VRAM profile (profile 4 or profile 5), I am providing a patch for the transformers libray that should double the speed of the transformers libary (note this patch offers little little improvements on other profiles), this patch overwrites two files from the transformers libary. You can either copy and paste my 'transformers' folder in your venv or run the script below if the venv directory is just below the app directory:
+
+Update: I have added another patch which double the speed of stage 2 of the generation process for all profiles and also triple the speed of stage 1 for profile 1 and 3 (16 GB VRAM +). You will need to install Flash Attention 2 for this second patch to work.
 
 For Linux:
 ```
