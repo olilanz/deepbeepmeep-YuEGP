@@ -105,7 +105,8 @@ This application include two models: a text to world generator and a image / vid
 A flux derived image generator that will allow you to transfer an object of your choosing in a prompted scene. It is optimized to run with ony 6 GB of VRAM.
 
 ## News and Updates
-* **2025.02.06 🔥**: V2.0 DeepBeepMeep: 3 times faster with 12+ GB VRAM GPUs (requires Flash Attention 2) thanks to a new optimized transformers libary. You will need to reapply the patchtransformers.sh. Generating a 1 min song takes now only 4 minutes on a RTX 4090 ! Added also progression info in terminal to provide feedback (pending real progression bars).
+* **2025.02.06 🔥**: V2.2 DeepBeepMeep: forgot to remove test code that was slowing down profile 1 and 3
+* **2025.02.06 🔥**: V2.1 DeepBeepMeep: 3 times faster with 12+ GB VRAM GPUs (requires Flash Attention 2) thanks to a new optimized transformers libary. You will need to reapply the patchtransformers.sh. Generating a 1 min song takes now only 4 minutes on a RTX 4090 ! Added also progression info in terminal to provide feedback (pending real progression bars).
 
 * **2025.01.30 🔥**: V1.3 DeepBeepMeep: Added support for In Context Learning, now you can provide audio samples prompts to drive the song generation.
 * **2025.01.30 🔥**: V1.2 DeepBeepMeep: Speed improvements for low VRAM profiles + patch for transformers library.

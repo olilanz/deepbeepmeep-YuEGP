@@ -90,7 +90,6 @@ if sdpa:
 else:
     attn_implementation="flash_attention_2"
 
-args.stage2_batch_size = 4
 
 if args.use_audio_prompt and not args.audio_prompt_path:
     raise FileNotFoundError("Please offer audio prompt filepath using '--audio_prompt_path', when you enable 'use_audio_prompt'!")
@@ -242,7 +241,7 @@ def generate_song(genres_input, lyrics_input, run_n_segments, seed, max_new_toke
     # Format text prompt
     run_n_segments = min(run_n_segments, len(lyrics)) 
     for i, p in enumerate(tqdm(prompt_texts[1:run_n_segments + 1]), 1):
-        print(f"---Stage 1: Generating Sequence {i} out of {run_n_segments}")
+        print(f"---Stage 1.{i}: Generating Sequence {i} out of {run_n_segments}")
         section_text = p.replace('[start_of_segment]', '').replace('[end_of_segment]', '')
         guidance_scale = 1.5 if i <=1 else 1.2
         if i==1:
