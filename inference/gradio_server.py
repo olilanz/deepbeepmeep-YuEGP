@@ -23,7 +23,6 @@ from mmtokenizer import _MMSentencePieceTokenizer
 from models.soundstream_hubert_new import SoundStream
 from vocoder import build_codec_model, process_audio
 from post_process_audio import replace_low_freq_with_energy_matched
-parser = argparse.ArgumentParser()
 import gradio as gr
 
 parser = argparse.ArgumentParser()
@@ -68,7 +67,6 @@ profile = args.profile
 compile = args.compile
 sdpa = args.sdpa
 use_icl = args.icl
-# use_icl = True
 
 if use_icl:
     args.stage1_model="m-a-p/YuE-s1-7B-anneal-en-icl"
@@ -662,6 +660,5 @@ if __name__ == "__main__":
         
     demo = create_demo()
 
-    demo.launch(server_name=server_name, server_port=server_port)
-
+    demo.launch(server_name=server_name, server_port=server_port, allowed_paths=[args.output_dir])
  
