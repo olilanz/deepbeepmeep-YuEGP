@@ -101,7 +101,7 @@ One of the best inpainting / outpainting tools based on Flux that can run with l
 - Cosmos1GP: https://github.com/deepbeepmeep/Cosmos1GP :\
 This application include two models: a text to world generator and a image / video to world (probably the best open source image to video generator).
 
-- OminiControlGP: https://github.com/deepbeepmeep/OminiControl1GP :\
+- OminiControlGP: https://github.com/deepbeepmeep/OminiControlGP :\
 A flux derived image generator that will allow you to transfer an object of your choosing in a prompted scene. It is optimized to run with ony 6 GB of VRAM.
 
 ## News and Updates
