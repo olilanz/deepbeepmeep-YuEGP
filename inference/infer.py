@@ -125,6 +125,13 @@ model_stage2 = AutoModelForCausalLM.from_pretrained(
     )
 model_stage2.to("cpu")
 model_stage2.eval()
+
+# remove test on arguments for method 'model.generate' in case transformers patch not applied
+def nop(nada):
+    pass
+model._validate_model_kwargs = nop
+model_stage2._validate_model_kwargs = nop
+
 pipe = { "transformer" :model , "stage2" :model_stage2    }
 
 quantizeTransformer = profile == 3 or profile == 4 or profile == 5 
