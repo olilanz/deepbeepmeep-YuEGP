@@ -23,6 +23,7 @@ from mmtokenizer import _MMSentencePieceTokenizer
 from models.soundstream_hubert_new import SoundStream
 from vocoder import build_codec_model, process_audio
 from post_process_audio import replace_low_freq_with_energy_matched
+
 parser = argparse.ArgumentParser()
 # Model Configuration:
 parser.add_argument("--stage1_model", type=str, default="m-a-p/YuE-s1-7B-anneal-en-cot", help="The model checkpoint path or identifier for the Stage 1 model.")
@@ -70,14 +71,7 @@ if use_icl:
 else:
     args.stage1_model="m-a-p/YuE-s1-7B-anneal-en-cot"
 
-args.stage2_model="m-a-p/YuE-s2-1B-general"
-args.genre_txt="prompt_examples/genrerock.txt"
-args.lyrics_txt="prompt_examples/lastxmas.txt"
-args.run_n_segments=2
 args.stage2_batch_size=12 if profile==1 else 4
-args.output_dir= "./output"
-args.cuda_idx =  0
-args.max_new_tokens = 3000 
 
 if sdpa:
     attn_implementation="sdpa"
@@ -288,8 +282,9 @@ for i in range(range_begin, len(soa_idx)):
     instrumentals.append(instrumentals_ids)
 vocals = np.concatenate(vocals, axis=1)
 instrumentals = np.concatenate(instrumentals, axis=1)
-vocal_save_path = os.path.join(stage1_output_dir, f"{genres.replace(' ', '-')}_tp{top_p}_T{temperature}_rp{repetition_penalty}_maxtk{max_new_tokens}_{random_id}_vtrack".replace('.', '@')+'.npy')
-inst_save_path = os.path.join(stage1_output_dir, f"{genres.replace(' ', '-')}_tp{top_p}_T{temperature}_rp{repetition_penalty}_maxtk{max_new_tokens}_{random_id}_itrack".replace('.', '@')+'.npy')
+output_filename_base = f"{genres.replace(' ', '-')[:150]}_tp{top_p}_T{temperature}_rp{repetition_penalty}_maxtk{max_new_tokens}_{random_id}".replace('.', '@')
+vocal_save_path = os.path.join(stage1_output_dir, f"{output_filename_base}_vtrack.npy")
+inst_save_path = os.path.join(stage1_output_dir, f"{output_filename_base}_itrack.npy")
 np.save(vocal_save_path, vocals)
 np.save(inst_save_path, instrumentals)
 stage1_output_set.append(vocal_save_path)
