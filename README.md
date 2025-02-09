@@ -85,6 +85,12 @@ cd inference
 python gradio_server.py --profile 4 --sdpa
 ```
 
+You can try a new experimental turbo stage 2 with profile 1 (16 GB+ RAM) that makes stage two times faster. However it is not clear whether this has some impact on the quality of the generated song:
+```bash
+cd inference
+python gradio_server.py --profile 1 --turbo-stage2
+```
+
 You may check the mmgp git homepage  (https://github.com/deepbeepmeep/mmgp)  if you want to design your own profiles.
 
 ### Other applications for the GPU Poors
@@ -105,7 +111,8 @@ This application include two models: a text to world generator and a image / vid
 A flux derived image generator that will allow you to transfer an object of your choosing in a prompted scene. It is optimized to run with ony 6 GB of VRAM.
 
 ## News and Updates
-* **2025.02.06 🔥**: V2.21 DeepBeepMeep: Thanks to olilanz for aligning infer.py with gradio server.py and addding code to reinforce robustness 
+* **2025.02.10 🔥**: V3.0 DeepBeepMeep: Added possibility to generate multiple songs per Genres prompt and to generate multiple Genres songs in a row based on the same lyrics. Added also a progression bar and an Abort button. You will need to update the transformers patch for the progression bar to work. I have also added an experimental turbo stage 2 that makes this stage two times faster (use the --turbo-stage2 switch). It will work with 16GB+ VRAM and may produce lesser quality songs.
+* **2025.02.08 🔥**: V2.21 DeepBeepMeep: Thanks to olilanz for aligning infer.py with gradio server.py and addding code to reinforce robustness 
 * **2025.02.06 🔥**: V2.2 DeepBeepMeep: forgot to remove test code that was slowing down profile 1 and 3
 * **2025.02.06 🔥**: V2.1 DeepBeepMeep: 3 times faster with 12+ GB VRAM GPUs (requires Flash Attention 2) thanks to a new optimized transformers libary. You will need to reapply the patchtransformers.sh. Generating a 1 min song takes now only 4 minutes on a RTX 4090 ! Added also progression info in terminal to provide feedback (pending real progression bars).
 

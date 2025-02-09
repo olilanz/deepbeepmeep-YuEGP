@@ -13,6 +13,7 @@ import argparse
 import numpy as np
 import torch
 import torchaudio
+import time
 from torchaudio.transforms import Resample
 import soundfile as sf
 from einops import rearrange
@@ -59,6 +60,7 @@ parser.add_argument("--verbose", type=int, default=1)
 parser.add_argument("--compile", action="store_true")
 parser.add_argument("--sdpa", action="store_true")
 parser.add_argument("--icl", action="store_true")
+parser.add_argument("--turbo-stage2", action="store_true")
 
 
 args = parser.parse_args()
@@ -79,7 +81,7 @@ args.genre_txt="prompt_examples/genrerock.txt"
 args.lyrics_txt="prompt_examples/lastxmas.txt"
 args.run_n_segments=2
 
-args.stage2_batch_size= [12,12,12,4,3,2][profile]   
+args.stage2_batch_size= [20,20,20,4,3,2][profile]   
 args.output_dir= "./output"
 args.cuda_idx =  0
 args.max_new_tokens = 3000 
@@ -190,53 +192,18 @@ def split_lyrics(lyrics):
     structured_lyrics = [f"[{seg[0]}]\n{seg[1].strip()}\n\n" for seg in segments]
     return structured_lyrics
 
-
-def generate_song(genres_input, lyrics_input, run_n_segments, seed, max_new_tokens, vocal_track_prompt, instrumental_track_prompt, prompt_start_time, prompt_end_time, progress=gr.Progress()):
-    args.use_audio_prompt = False
-    args.use_dual_tracks_prompt = False
-    # Call the function and print the result
-
-    if use_icl:
-        if prompt_start_time > prompt_end_time:
-            raise gr.Error(f"'Start time' should be less than 'End Time'")
-        if (prompt_end_time - prompt_start_time) > 30 :
-            raise gr.Error(f"The duration for the audio prompt should not exceed 30s")
-        if vocal_track_prompt == None:
-            raise gr.Error(f"You must provide at least a Vocal audio prompt")
-        args.prompt_start_time = prompt_start_time
-        args.prompt_end_time = prompt_end_time
-
-        if instrumental_track_prompt == None:
-            args.use_audio_prompt = True
-            args.audio_prompt_path = vocal_track_prompt
-        else:
-            args.use_dual_tracks_prompt = True
-            args.vocal_track_prompt_path = vocal_track_prompt
-            args.instrumental_track_prompt_path = instrumental_track_prompt
-
-
-    # return "output/cot_inspiring-female-uplifting-pop-airy-vocal-electronic-bright-vocal-vocal_tp0@93_T1@0_rp1@2_maxtk3000_mixed_e0a99c45-7f63-41c9-826f-9bde7417db4c.mp3"
+def stage1_inference(genres, lyrics_input, run_n_segments, max_new_tokens, random_id, state = None, callback = None):
     # Tips:
     # genre tags support instrumental，genre，mood，vocal timbr and vocal gender
     # all kinds of tags are needed
-    genres = genres_input.strip()
+    genres = genres.strip()
+
     lyrics = split_lyrics(lyrics_input)
     # intruction
     full_lyrics = "\n".join(lyrics)
     prompt_texts = [f"Generate music from the given lyrics segment by segment.\n[Genre] {genres}\n{full_lyrics}"]
     prompt_texts += lyrics
 
-    import random
-
-    if seed <= 0:
-        seed = random.randint(0, 999999999)
-
-    torch.cuda.manual_seed(seed)
-    random.seed(seed)
-
-
-    random_id = uuid.uuid4()
-    output_seq = None
     # Here is suggested decoding config
     top_p = 0.93
     temperature = 1.0
@@ -247,7 +214,8 @@ def generate_song(genres_input, lyrics_input, run_n_segments, seed, max_new_toke
     # Format text prompt
     run_n_segments = min(run_n_segments, len(lyrics)) 
     for i, p in enumerate(tqdm(prompt_texts[1:run_n_segments + 1]), 1):
-        print(f"---Stage 1.{i}: Generating Sequence {i} out of {run_n_segments}")
+        # print(f"---Stage 1: Generating Sequence {i} out of {run_n_segments}")
+        state["stage"] = f"Stage 1: Generating Sequence {i} out of {run_n_segments}"
         section_text = p.replace('[start_of_segment]', '').replace('[end_of_segment]', '')
         guidance_scale = 1.5 if i <=1 else 1.2
         if i==1:
@@ -300,6 +268,7 @@ def generate_song(genres_input, lyrics_input, run_n_segments, seed, max_new_toke
                 pad_token_id=mmtokenizer.eoa,
                 logits_processor=LogitsProcessorList([BlockTokenRangeProcessor(0, 32002), BlockTokenRangeProcessor(32016, 32017)]),
                 guidance_scale=guidance_scale,
+                callback = callback,
                 )
             torch.cuda.empty_cache()
             if output_seq[0][-1].item() != mmtokenizer.eoa:
@@ -339,265 +308,420 @@ def generate_song(genres_input, lyrics_input, run_n_segments, seed, max_new_toke
     stage1_output_set = []
     stage1_output_set.append(vocal_save_path)
     stage1_output_set.append(inst_save_path)
+    return stage1_output_set
 
-    # random_id ="5b4b4613-1cc2-4d84-af7a-243f853f168b"
-    # stage1_output_set = [ "output/stage1/inspiring-female-uplifting-pop-airy-vocal-electronic-bright-vocal_tp0@93_T1@0_rp1@2_maxtk3000_5b4b4613-1cc2-4d84-af7a-243f853f168b_vtrack.npy", 
-    #                       "output/stage1/inspiring-female-uplifting-pop-airy-vocal-electronic-bright-vocal_tp0@93_T1@0_rp1@2_maxtk3000_5b4b4613-1cc2-4d84-af7a-243f853f168b_itrack.npy"]
+def stage2_generate(model, prompt, batch_size=16, segment_duration = 6, state = None, callback = None):
+    codec_ids = codectool.unflatten(prompt, n_quantizer=1)
+    codec_ids = codectool.offset_tok_ids(
+                    codec_ids, 
+                    global_offset=codectool.global_offset, 
+                    codebook_size=codectool.codebook_size, 
+                    num_codebooks=codectool.num_codebooks, 
+                ).astype(np.int32)
+    
+    # Prepare prompt_ids based on batch size or single input
+    if batch_size > 1:
+        codec_list = []
+        for i in range(batch_size):
+            idx_begin = i * segment_duration * 50
+            idx_end = (i + 1) * segment_duration * 50
+            codec_list.append(codec_ids[:, idx_begin:idx_end])
 
-    def stage2_generate(model, prompt, batch_size=16):
-        codec_ids = codectool.unflatten(prompt, n_quantizer=1)
-        codec_ids = codectool.offset_tok_ids(
-                        codec_ids, 
-                        global_offset=codectool.global_offset, 
-                        codebook_size=codectool.codebook_size, 
-                        num_codebooks=codectool.num_codebooks, 
-                    ).astype(np.int32)
-        
-        # Prepare prompt_ids based on batch size or single input
-        if batch_size > 1:
-            codec_list = []
-            for i in range(batch_size):
-                idx_begin = i * 300
-                idx_end = (i + 1) * 300
-                codec_list.append(codec_ids[:, idx_begin:idx_end])
+        codec_ids = np.concatenate(codec_list, axis=0)
+        prompt_ids = np.concatenate(
+            [
+                np.tile([mmtokenizer.soa, mmtokenizer.stage_1], (batch_size, 1)),
+                codec_ids,
+                np.tile([mmtokenizer.stage_2], (batch_size, 1)),
+            ],
+            axis=1
+        )
+    else:
+        prompt_ids = np.concatenate([
+            np.array([mmtokenizer.soa, mmtokenizer.stage_1]),
+            codec_ids.flatten(),  # Flatten the 2D array to 1D
+            np.array([mmtokenizer.stage_2])
+        ]).astype(np.int32)
+        prompt_ids = prompt_ids[np.newaxis, ...]
 
-            codec_ids = np.concatenate(codec_list, axis=0)
-            prompt_ids = np.concatenate(
-                [
-                    np.tile([mmtokenizer.soa, mmtokenizer.stage_1], (batch_size, 1)),
-                    codec_ids,
-                    np.tile([mmtokenizer.stage_2], (batch_size, 1)),
-                ],
-                axis=1
-            )
-        else:
-            prompt_ids = np.concatenate([
-                np.array([mmtokenizer.soa, mmtokenizer.stage_1]),
-                codec_ids.flatten(),  # Flatten the 2D array to 1D
-                np.array([mmtokenizer.stage_2])
-            ]).astype(np.int32)
-            prompt_ids = prompt_ids[np.newaxis, ...]
+    codec_ids = torch.as_tensor(codec_ids).to(device)
+    prompt_ids = torch.as_tensor(prompt_ids).to(device)
+    len_prompt = prompt_ids.shape[-1]
+    
+    block_list = LogitsProcessorList([BlockTokenRangeProcessor(0, 46358), BlockTokenRangeProcessor(53526, mmtokenizer.vocab_size)])
 
-        codec_ids = torch.as_tensor(codec_ids).to(device)
-        prompt_ids = torch.as_tensor(prompt_ids).to(device)
-        len_prompt = prompt_ids.shape[-1]
-        
-        block_list = LogitsProcessorList([BlockTokenRangeProcessor(0, 46358), BlockTokenRangeProcessor(53526, mmtokenizer.vocab_size)])
+    # Teacher forcing generate loop
+    
+    max_tokens = codec_ids.shape[1] *8
+    i = 0
+    real_max_length = codec_ids.shape[1] *8 + prompt_ids.shape[1]
+    session_cache = { "real_max_length" : real_max_length }
+    codec_ids.shape[1]
+    for frames_idx in range(codec_ids.shape[1]):
+        if i % 96 ==0 :
+            # print(f"Tokens: {i} out of {max_tokens}")
+            callback(i, real_max_length )
 
-        # Teacher forcing generate loop
-        
-        max_tokens = codec_ids.shape[1] *8
-        i = 0
-        session_cache = { "real_max_length" : codec_ids.shape[1] *8 + prompt_ids.shape[1] }
-        codec_ids.shape[1]
-        for frames_idx in range(codec_ids.shape[1]):
-            if i % 96 ==0 :
-                print(f"Tokens: {i} out of {max_tokens}")
-            cb0 = codec_ids[:, frames_idx:frames_idx+1]
-            # print(f"insert cb0: {cb0}")
-            prompt_ids = torch.cat([prompt_ids, cb0], dim=1)
-            input_ids = prompt_ids
+        cb0 = codec_ids[:, frames_idx:frames_idx+1]
+        # print(f"insert cb0: {cb0}")
+        prompt_ids = torch.cat([prompt_ids, cb0], dim=1)
+        input_ids = prompt_ids
 
-            with torch.no_grad():
-                stage2_output = model.generate(input_ids=input_ids, 
-                    min_new_tokens=7,
-                    max_new_tokens=7,
-                    eos_token_id=mmtokenizer.eoa,
-                    pad_token_id=mmtokenizer.eoa,
-                    logits_processor=block_list,
-                    session_cache = session_cache,
-                )
-            
-            assert stage2_output.shape[1] - prompt_ids.shape[1] == 7, f"output new tokens={stage2_output.shape[1]-prompt_ids.shape[1]}"
-            prompt_ids = stage2_output
-            i+= 8
-
-        del session_cache
-        torch.cuda.empty_cache()
-
-        # Return output based on batch size
-        if batch_size > 1:
-            output = prompt_ids.cpu().numpy()[:, len_prompt:]
-            output_list = [output[i] for i in range(batch_size)]
-            output = np.concatenate(output_list, axis=0)
-        else:
-            output = prompt_ids[0].cpu().numpy()[len_prompt:]
-
-        return output
-
-    def stage2_inference(model, stage1_output_set, stage2_output_dir, batch_size=4):
-        stage2_result = []
-        for i in tqdm(range(len(stage1_output_set))):
-            if i==0:
-                print("---Stage 2.1: Sampling Vocal track")
-            else:
-                print("---Stage 2.2: Sampling Instrumental track")
-
-            output_filename = os.path.join(stage2_output_dir, os.path.basename(stage1_output_set[i]))
-            
-            if os.path.exists(output_filename) and False:
-                print(f'{output_filename} stage2 has done.')
-                stage2_result.append(output_filename)
-                continue
-            
-            # Load the prompt
-            prompt = np.load(stage1_output_set[i]).astype(np.int32)
-            
-            # Only accept 6s segments
-            output_duration = prompt.shape[-1] // 50 // 6 * 6
-            num_batch = output_duration // 6
-            
-            if num_batch <= batch_size:
-                # If num_batch is less than or equal to batch_size, we can infer the entire prompt at once
-                print("Only one segment to process for this track")
-                output = stage2_generate(model, prompt[:, :output_duration*50], batch_size=num_batch)
-            else:
-                # If num_batch is greater than batch_size, process in chunks of batch_size
-                segments = []
-                num_segments = (num_batch // batch_size) + (1 if num_batch % batch_size != 0 else 0)
-
-                for seg in range(num_segments):
-                    print(f"Segment {seg+1} / {num_segments}")
-                    start_idx = seg * batch_size * 300
-                    # Ensure the end_idx does not exceed the available length
-                    end_idx = min((seg + 1) * batch_size * 300, output_duration*50)  # Adjust the last segment
-                    current_batch_size = batch_size if seg != num_segments-1 or num_batch % batch_size == 0 else num_batch % batch_size
-                    segment = stage2_generate(
-                        model,
-                        prompt[:, start_idx:end_idx],
-                        batch_size=current_batch_size
-                    )
-                    segments.append(segment)
-
-                # Concatenate all the segments
-                output = np.concatenate(segments, axis=0)
-            
-            # Process the ending part of the prompt
-            if output_duration*50 != prompt.shape[-1]:
-                ending = stage2_generate(model, prompt[:, output_duration*50:], batch_size=1)
-                output = np.concatenate([output, ending], axis=0)
-            output = codectool_stage2.ids2npy(output)
-
-            # Fix invalid codes (a dirty solution, which may harm the quality of audio)
-            # We are trying to find better one
-            fixed_output = copy.deepcopy(output)
-            for i, line in enumerate(output):
-                for j, element in enumerate(line):
-                    if element < 0 or element > 1023:
-                        counter = Counter(line)
-                        most_frequant = sorted(counter.items(), key=lambda x: x[1], reverse=True)[0][0]
-                        fixed_output[i, j] = most_frequant
-            # save output
-            np.save(output_filename, fixed_output)
-            stage2_result.append(output_filename)
-        return stage2_result
-
-    stage2_result = stage2_inference(model_stage2, stage1_output_set, stage2_output_dir, batch_size=args.stage2_batch_size)
-    print(stage2_result)
-    print('Stage 2 DONE.\n')
-    # convert audio tokens to audio
-    def save_audio(wav: torch.Tensor, path, sample_rate: int, rescale: bool = False):
-        folder_path = os.path.dirname(path)
-        if not os.path.exists(folder_path):
-            os.makedirs(folder_path)
-        limit = 0.99
-        max_val = wav.abs().max()
-        wav = wav * min(limit / max_val, 1) if rescale else wav.clamp(-limit, limit)
-        torchaudio.save(str(path), wav, sample_rate=sample_rate, encoding='PCM_S', bits_per_sample=16)
-    # reconstruct tracks
-    recons_output_dir = os.path.join(args.output_dir, "recons")
-    recons_mix_dir = os.path.join(recons_output_dir, 'mix')
-    os.makedirs(recons_mix_dir, exist_ok=True)
-    tracks = []
-    for npy in stage2_result:
-        codec_result = np.load(npy)
-        decodec_rlt=[]
         with torch.no_grad():
-            decoded_waveform = codec_model.decode(torch.as_tensor(codec_result.astype(np.int16), dtype=torch.long).unsqueeze(0).permute(1, 0, 2).to(device))
-        decoded_waveform = decoded_waveform.cpu().squeeze(0)
-        decodec_rlt.append(torch.as_tensor(decoded_waveform, device ="cpu"))
-        decodec_rlt = torch.cat(decodec_rlt, dim=-1)
-        save_path = os.path.join(recons_output_dir, os.path.splitext(os.path.basename(npy))[0] + ".mp3")
-        tracks.append(save_path)
-        save_audio(decodec_rlt, save_path, 16000)
-    # mix tracks
-    for inst_path in tracks:
-        try:
-            if (inst_path.endswith('.wav') or inst_path.endswith('.mp3')) \
-                and '_itrack' in inst_path:
-                # find pair
-                vocal_path = inst_path.replace('_itrack', '_vtrack')
-                if not os.path.exists(vocal_path):
-                    continue
-                # mix
-                recons_mix = os.path.join(recons_mix_dir, os.path.basename(inst_path).replace('_itrack', '_mixed'))
-                vocal_stem, sr = sf.read(inst_path)
-                instrumental_stem, _ = sf.read(vocal_path)
-                mix_stem = (vocal_stem + instrumental_stem) / 1
-                sf.write(recons_mix, mix_stem, sr)
-        except Exception as e:
-            print(e)
-
-    # vocoder to upsample audios
-    vocal_decoder, inst_decoder = build_codec_model(args.config_path, args.vocal_decoder_path, args.inst_decoder_path)
-    vocoder_output_dir = os.path.join(args.output_dir, 'vocoder')
-    vocoder_stems_dir = os.path.join(vocoder_output_dir, 'stems')
-    vocoder_mix_dir = os.path.join(vocoder_output_dir, 'mix')
-    os.makedirs(vocoder_mix_dir, exist_ok=True)
-    os.makedirs(vocoder_stems_dir, exist_ok=True)
-    for npy in stage2_result:
-        if '_itrack' in npy:
-            # Process instrumental
-            instrumental_output = process_audio(
-                npy,
-                os.path.join(vocoder_stems_dir, 'itrack.mp3'),
-                args.rescale,
-                args,
-                inst_decoder,
-                codec_model
+            stage2_output = model.generate(input_ids=input_ids, 
+                min_new_tokens=7,
+                max_new_tokens=7,
+                eos_token_id=mmtokenizer.eoa,
+                pad_token_id=mmtokenizer.eoa,
+                logits_processor=block_list,
+                session_cache = session_cache,
             )
+        
+        assert stage2_output.shape[1] - prompt_ids.shape[1] == 7, f"output new tokens={stage2_output.shape[1]-prompt_ids.shape[1]}"
+        prompt_ids = stage2_output
+        i+= 8
+
+    del session_cache
+    torch.cuda.empty_cache()
+
+    # Return output based on batch size
+    if batch_size > 1:
+        output = prompt_ids.cpu().numpy()[:, len_prompt:]
+        output_list = [output[i] for i in range(batch_size)]
+        output = np.concatenate(output_list, axis=0)
+    else:
+        output = prompt_ids[0].cpu().numpy()[len_prompt:]
+
+    return output
+
+def stage2_inference(model, stage1_output_set, stage2_output_dir, batch_size=4, segment_duration = 6, state = None, callback = None):
+    stage2_result = []
+    for i in tqdm(range(len(stage1_output_set))):
+        if i==0:
+            # print("---Stage 2.1: Sampling Vocal track")
+            prefix = "Stage 2.1: Sampling Vocal track"
         else:
-            # Process vocal
-            vocal_output = process_audio(
-                npy,
-                os.path.join(vocoder_stems_dir, 'vtrack.mp3'),
-                args.rescale,
-                args,
-                vocal_decoder,
-                codec_model
-            )
-    # mix tracks
-    try:
-        mix_output = instrumental_output + vocal_output
-        vocoder_mix = os.path.join(vocoder_mix_dir, os.path.basename(recons_mix))
-        save_audio(mix_output, vocoder_mix, 44100, args.rescale)
-        print(f"Created mix: {vocoder_mix}")
-    except RuntimeError as e:
-        print(e)
-        print(f"mix {vocoder_mix} failed! inst: {instrumental_output.shape}, vocal: {vocal_output.shape}")
+            # print("---Stage 2.2: Sampling Instrumental track")
+            prefix = "Stage 2.2: Sampling Instrumental track"
 
-    # Post process
-    output_file = os.path.join(args.output_dir, os.path.basename(recons_mix))
-    replace_low_freq_with_energy_matched(
-        a_file=recons_mix,     # 16kHz
-        b_file=vocoder_mix,     # 48kHz
-        c_file=output_file,
-        cutoff_freq=5500.0
-    )
-    return output_file
+        output_filename = os.path.join(stage2_output_dir, os.path.basename(stage1_output_set[i]))
+        
+        if os.path.exists(output_filename) and False:
+            print(f'{output_filename} stage2 has done.')
+            stage2_result.append(output_filename)
+            continue
+        
+        # Load the prompt
+        prompt = np.load(stage1_output_set[i]).astype(np.int32)
+        segment_length = 3
+        # Only accept 6s segments ( = segment_duration )
+        output_duration = prompt.shape[-1] // 50 // segment_duration * segment_duration
+        num_batch = output_duration // segment_duration
+
+        any_trail = output_duration*50 != prompt.shape[-1]
+
+        if num_batch <= batch_size:
+            # If num_batch is less than or equal to batch_size, we can infer the entire prompt at once
+            # print("Only one segment to process for this track")               
+            max_segments = 2 if any_trail else 1
+            if max_segments == 1:
+                state["stage"]= prefix                
+            else:
+                state["stage"]= prefix + f", segment 1 out of {max_segments}"                
+            output = stage2_generate(model, prompt[:, :output_duration*50], batch_size=num_batch, segment_duration=segment_duration, state= state, callback= callback)
+        else:
+            # If num_batch is greater than batch_size, process in chunks of batch_size
+            segments = []
+            num_segments = (num_batch // batch_size) + (1 if num_batch % batch_size != 0 else 0)
+
+
+            max_segments = num_segments +1 if any_trail else num_segments
+            for seg in range(num_segments):
+                # print(f"Segment {seg+1} out of {max_segments}")
+                state["stage"]= prefix + f", segment {seg+1} out of {max_segments}"                
+                start_idx = seg * batch_size * 300
+                # Ensure the end_idx does not exceed the available length
+                end_idx = min((seg + 1) * batch_size * 300, output_duration*50)  # Adjust the last segment
+                current_batch_size = batch_size if seg != num_segments-1 or num_batch % batch_size == 0 else num_batch % batch_size
+                segment = stage2_generate(
+                    model,
+                    prompt[:, start_idx:end_idx],
+                    batch_size=current_batch_size,
+                    segment_duration= segment_duration,
+                    state= state, 
+                    callback= callback
+                )
+                segments.append(segment)
+
+            # Concatenate all the segments
+            output = np.concatenate(segments, axis=0)
+        
+        # Process the ending part of the prompt
+        if any_trail:
+            # print(f"Segment {max_segments} / {max_segments}")
+            state["stage"]= prefix + f", segment {max_segments} out of {max_segments}"                
+            ending = stage2_generate(model, prompt[:, output_duration*50:], batch_size=1, segment_duration=segment_duration, state= state, callback= callback)
+            output = np.concatenate([output, ending], axis=0)
+        output = codectool_stage2.ids2npy(output)
+
+        # Fix invalid codes (a dirty solution, which may harm the quality of audio)
+        # We are trying to find better one
+        fixed_output = copy.deepcopy(output)
+        for i, line in enumerate(output):
+            for j, element in enumerate(line):
+                if element < 0 or element > 1023:
+                    counter = Counter(line)
+                    most_frequant = sorted(counter.items(), key=lambda x: x[1], reverse=True)[0][0]
+                    fixed_output[i, j] = most_frequant
+        # save output
+        np.save(output_filename, fixed_output)
+        stage2_result.append(output_filename)
+    return stage2_result
+
+
+    
+def build_callback(state,  progress, status ):
+    def callback(tokens_processed, max_tokens):
+        prefix = state["prefix"]
+        status = prefix + state["stage"]
+        tokens_processed += 1         
+        if state.get("abort", False):
+            status_msg = status + " - Aborting"    
+            raise Exception("abort")
+            # pipe._interrupt = True
+        # elif step_idx  == num_inference_steps:
+        #     status_msg = status + " - VAE Decoding"    
+        else:
+            status_msg = status #+ " - Denoising"   
+
+        progress( tokens_processed / max_tokens , desc= status_msg , unit= " %")
+            
+    return callback
+
+def abort_generation(state):
+    if "in_progress" in state:
+        state["abort"] = True
+        return gr.Button(interactive=  False)
+    else:
+        return gr.Button(interactive=  True)
+
+def refresh_gallery(state):
+    file_list = state.get("file_list", None)  
+    if len(file_list) > 0:    
+        return file_list[0], file_list
+    else:
+        return None, file_list
+
+        
+def finalize_gallery(state):
+    if "in_progress" in state:
+        del state["in_progress"]
+    time.sleep(0.2)
+    return gr.Button(interactive=  True)
+
+
+def generate_song(genres_input, lyrics_input, run_n_segments, seed, max_new_tokens, vocal_track_prompt, instrumental_track_prompt, prompt_start_time, prompt_end_time, repeat_generation, state, progress=gr.Progress()):
+    args.use_audio_prompt = False
+    args.use_dual_tracks_prompt = False
+    # Call the function and print the result
+    
+    if "abort" in state:
+        del state["abort"]
+    state["in_progress"] = True
+    state["selected"] = 0 
+    file_list= state.get("file_list", []) 
+    if len(file_list) == 0: 
+        state["file_list"] = file_list    
+
+
+
+    if use_icl:
+        if prompt_start_time > prompt_end_time:
+            raise gr.Error(f"'Start time' should be less than 'End Time'")
+        if (prompt_end_time - prompt_start_time) > 30 :
+            raise gr.Error(f"The duration for the audio prompt should not exceed 30s")
+        if vocal_track_prompt == None:
+            raise gr.Error(f"You must provide at least a Vocal audio prompt")
+        args.prompt_start_time = prompt_start_time
+        args.prompt_end_time = prompt_end_time
+
+        if instrumental_track_prompt == None:
+            args.use_audio_prompt = True
+            args.audio_prompt_path = vocal_track_prompt
+        else:
+            args.use_dual_tracks_prompt = True
+            args.vocal_track_prompt_path = vocal_track_prompt
+            args.instrumental_track_prompt_path = instrumental_track_prompt
+
+    segment_duration = 3 if args.turbo_stage2 else 6  
+
+    import random
+
+    if seed <= 0:
+        seed = random.randint(0, 999999999)
+
+    genres_input = genres_input.replace("\r", "").split("\n")
+    song_no = 0
+    total_songs =  repeat_generation * len(genres_input)
+
+    start_time = time.time()
+    for genres_no, genres in  enumerate(genres_input):
+        for gen_no in range(repeat_generation):
+            song_no += 1
+            prefix = ""
+            status = f"Song {song_no}/{total_songs}"
+            if len(genres_input) > 1:
+                prefix += f"Genres {genres_no+1}/{len(genres_input)} > "
+            if repeat_generation > 1:
+                prefix += f"Generation {gen_no+1}/{repeat_generation} > "
+            state["prefix"] = prefix
+
+            # return "output/cot_inspiring-female-uplifting-pop-airy-vocal-electronic-bright-vocal-vocal_tp0@93_T1@0_rp1@2_maxtk3000_mixed_e0a99c45-7f63-41c9-826f-9bde7417db4c.mp3"
+
+            torch.cuda.manual_seed(seed)
+            random.seed(seed)
+            random_id = uuid.uuid4()
+
+            callback = build_callback(state,  progress, status)
+
+            # if True:
+            try:
+                stage1_output_set = stage1_inference(genres, lyrics_input, run_n_segments, max_new_tokens, random_id, state, callback)
+
+                # random_id ="5b4b4613-1cc2-4d84-af7a-243f853f168b"
+                # stage1_output_set = [ "output/stage1/inspiring-female-uplifting-pop-airy-vocal-electronic-bright-vocal_tp0@93_T1@0_rp1@2_maxtk3000_5b4b4613-1cc2-4d84-af7a-243f853f168b_vtrack.npy", 
+                #                       "output/stage1/inspiring-female-uplifting-pop-airy-vocal-electronic-bright-vocal_tp0@93_T1@0_rp1@2_maxtk3000_5b4b4613-1cc2-4d84-af7a-243f853f168b_itrack.npy"]
+
+
+                stage2_result = stage2_inference(model_stage2, stage1_output_set, stage2_output_dir, batch_size=args.stage2_batch_size, segment_duration=segment_duration,  state= state, callback= callback)
+            except Exception as e:
+                s = str(e)
+                if "abort" in s:
+                     stage2_result = None
+                else:
+                    raise
+
+            if stage2_result == None:
+                end_time = time.time()
+                yield f"Song Generation Aborted. Total Generation Time: {end_time-start_time:.1f}s"
+                return
+            
+            print(stage2_result)
+            print('Stage 2 DONE.\n')
+            # convert audio tokens to audio
+            def save_audio(wav: torch.Tensor, path, sample_rate: int, rescale: bool = False):
+                folder_path = os.path.dirname(path)
+                if not os.path.exists(folder_path):
+                    os.makedirs(folder_path)
+                limit = 0.99
+                max_val = wav.abs().max()
+                wav = wav * min(limit / max_val, 1) if rescale else wav.clamp(-limit, limit)
+                torchaudio.save(str(path), wav, sample_rate=sample_rate, encoding='PCM_S', bits_per_sample=16)
+            # reconstruct tracks
+            recons_output_dir = os.path.join(args.output_dir, "recons")
+            recons_mix_dir = os.path.join(recons_output_dir, 'mix')
+            os.makedirs(recons_mix_dir, exist_ok=True)
+            tracks = []
+            for npy in stage2_result:
+                codec_result = np.load(npy)
+                decodec_rlt=[]
+                with torch.no_grad():
+                    decoded_waveform = codec_model.decode(torch.as_tensor(codec_result.astype(np.int16), dtype=torch.long).unsqueeze(0).permute(1, 0, 2).to(device))
+                decoded_waveform = decoded_waveform.cpu().squeeze(0)
+                decodec_rlt.append(torch.as_tensor(decoded_waveform, device ="cpu"))
+                decodec_rlt = torch.cat(decodec_rlt, dim=-1)
+                save_path = os.path.join(recons_output_dir, os.path.splitext(os.path.basename(npy))[0] + ".mp3")
+                tracks.append(save_path)
+                save_audio(decodec_rlt, save_path, 16000)
+            # mix tracks
+            for inst_path in tracks:
+                try:
+                    if (inst_path.endswith('.wav') or inst_path.endswith('.mp3')) \
+                        and '_itrack' in inst_path:
+                        # find pair
+                        vocal_path = inst_path.replace('_itrack', '_vtrack')
+                        if not os.path.exists(vocal_path):
+                            continue
+                        # mix
+                        recons_mix = os.path.join(recons_mix_dir, os.path.basename(inst_path).replace('_itrack', '_mixed'))
+                        vocal_stem, sr = sf.read(inst_path)
+                        instrumental_stem, _ = sf.read(vocal_path)
+                        mix_stem = (vocal_stem + instrumental_stem) / 1
+                        sf.write(recons_mix, mix_stem, sr)
+                except Exception as e:
+                    print(e)
+
+            # vocoder to upsample audios
+            vocal_decoder, inst_decoder = build_codec_model(args.config_path, args.vocal_decoder_path, args.inst_decoder_path)
+            vocoder_output_dir = os.path.join(args.output_dir, 'vocoder')
+            vocoder_stems_dir = os.path.join(vocoder_output_dir, 'stems')
+            vocoder_mix_dir = os.path.join(vocoder_output_dir, 'mix')
+            os.makedirs(vocoder_mix_dir, exist_ok=True)
+            os.makedirs(vocoder_stems_dir, exist_ok=True)
+            for npy in stage2_result:
+                if '_itrack' in npy:
+                    # Process instrumental
+                    instrumental_output = process_audio(
+                        npy,
+                        os.path.join(vocoder_stems_dir, 'itrack.mp3'),
+                        args.rescale,
+                        args,
+                        inst_decoder,
+                        codec_model
+                    )
+                else:
+                    # Process vocal
+                    vocal_output = process_audio(
+                        npy,
+                        os.path.join(vocoder_stems_dir, 'vtrack.mp3'),
+                        args.rescale,
+                        args,
+                        vocal_decoder,
+                        codec_model
+                    )
+            # mix tracks
+            try:
+                mix_output = instrumental_output + vocal_output
+                vocoder_mix = os.path.join(vocoder_mix_dir, os.path.basename(recons_mix))
+                save_audio(mix_output, vocoder_mix, 44100, args.rescale)
+                print(f"Created mix: {vocoder_mix}")
+            except RuntimeError as e:
+                print(e)
+                print(f"mix {vocoder_mix} failed! inst: {instrumental_output.shape}, vocal: {vocal_output.shape}")
+
+            # Post process
+            output_file = os.path.join(args.output_dir, os.path.basename(recons_mix))
+            replace_low_freq_with_energy_matched(
+                a_file=recons_mix,     # 16kHz
+                b_file=vocoder_mix,     # 48kHz
+                c_file=output_file,
+                cutoff_freq=5500.0
+            )
+            file_list.insert(0, output_file)
+            if song_no < total_songs:
+                yield status
+            else:
+                end_time = time.time()
+                yield f"Total Generation Time: {end_time-start_time:.1f}s"
+            seed += 1
+
+
+            # return output_file
 
 def create_demo():
     
     with gr.Blocks() as demo:
-        gr.Markdown("<div align=center><H1>YuE<SUP>GP</SUP></H3></div>")
+        gr.Markdown("<div align=center><H1>YuE<SUP>GP</SUP> v3</div>")
 
         gr.Markdown("<H1><DIV ALIGN=CENTER>YuE is a groundbreaking series of open-source foundation models designed for music generation, specifically for transforming lyrics into full songs (lyrics2song).</DIV></H1>")
-        gr.Markdown("<H2><B>GPU Poor version by DeepBeepMeep.</B> <A HREF='https://github.com/multimodal-art-projection/YuE'>Original Model</A>. Switch to profile 1 for turbo mode (requires a 16 GB VRAM GPU), 1 min of song will take only 4 minutes</H2>")
-
+        gr.Markdown("<H2><B>GPU Poor version by DeepBeepMeep.</B> <A HREF='https://github.com/multimodal-art-projection/YuE'>Original Model</A>. Switch to profile 1 for fast generation (requires a 16 GB VRAM GPU), 1 min of song will take only 4 minutes</H2>")
         if use_icl:
             gr.Markdown("<H3>With In Context Learning Mode in addition to the lyrics and genres info, you can provide audio prompts to describe your expectations. You can generate a song with either: </H3>")
             gr.Markdown("<H3>- a single mixed (song/instruments) Audio track prompt</H3>")
             gr.Markdown("<H3>- a Vocal track and an Instrumental track prompt</H3>")
+            gr.Markdown("Given some Lyrics and sample audio songs, you can try different Genres Prompt by separating each prompt by a carriage return.")
+        else:
+            gr.Markdown("Given some Lyrics, you can try different Genres Prompt by separating each prompt by a carriage return.")
 
         with gr.Row():
             with gr.Column():
@@ -606,18 +730,25 @@ def create_demo():
                     lyrics_file = f.read()
                 # lyrics_file.replace("\n", "\n\r")
 
-                genres_input = gr.Text(label="Genres", value="inspiring female uplifting pop airy vocal electronic bright vocal") 
+                genres_input = gr.Text(label="Genres Prompt (one Genres Prompt per line for multiple generations)", value="inspiring female uplifting pop airy vocal electronic bright vocal", lines=3) 
                 lyrics_input = gr.Text(label="Lyrics", lines = 20, value=lyrics_file ) 
+                repeat_generation = gr.Slider(1, 25.0, value=1.0, step=1, label="Number of Generated Songs per Genres Prompt") 
 
             with gr.Column():
-                # gen_status = gr.Text(label="Status", interactive= False) 
+                state = gr.State({})
                 number_sequences = gr.Slider(1, 10, value=2, step=1, label="Number of Sequences (paragraphs in Lyrics, the higher this number, the higher the VRAM consumption)")
-                max_new_tokens = gr.Slider(100, 6000, value=3000, step=1, label="Number of tokens per sequence (1000 tokens = 10s, the higher this number, the higher the VRAM consumptions) ")
+                max_new_tokens = gr.Slider(300, 6000, value=3000, step=300, label="Number of tokens per sequence (1000 tokens = 10s, the higher this number, the higher the VRAM consumption) ")
 
                 seed = gr.Slider(0, 999999999 , value=123, step=1, label="Seed (0 for random)")
-                output = gr.Audio( label="Generated Song")
-                state = gr.State({})
-                generate_btn = gr.Button("Generate")
+                with gr.Row():
+                    with gr.Column():
+                        gen_status = gr.Text(label="Status", interactive= False) 
+                        generate_btn = gr.Button("Generate")
+                        abort_btn = gr.Button("Abort")
+                        output = gr.Audio( label="Last Generated Song") 
+                        files_history = gr.Files(label="History of Generated Songs (From most Recent to Oldest)", type='filepath', height= 150 )
+                        abort_btn.click(abort_generation,state,abort_btn )
+                        gen_status.change(refresh_gallery, inputs = [state], outputs = [output, files_history] )
 
         with gr.Row(visible=use_icl) : #use_icl
             with gr.Column():
@@ -630,7 +761,7 @@ def create_demo():
                 prompt_end_time = gr.Slider(0.0, 300.0, value=30.0, step=0.5, label="Audio Prompt End time") 
 
 
-        # abort_btn.click(abort_generation,state,abort_btn )
+        abort_btn.click(abort_generation,state,abort_btn )
 
         generate_btn.click( 
             fn=generate_song,
@@ -644,11 +775,17 @@ def create_demo():
                 instrumental_track_prompt,
                 prompt_start_time,
                 prompt_end_time,
-                # state
+                repeat_generation,
+                state
             ],
-            outputs= [output] #,state 
+            outputs= [gen_status] #,state 
 
+        ) .then( 
+            finalize_gallery,
+            [state], 
+            [abort_btn]
         )
+
 
     return demo
 

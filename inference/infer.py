@@ -59,7 +59,6 @@ parser.add_argument("--verbose", type=int, default=1)
 parser.add_argument("--compile", action="store_true")
 parser.add_argument("--icl", action="store_true")
 
-
 args = parser.parse_args()
 profile = args.profile
 compile = args.compile
@@ -71,7 +70,7 @@ if use_icl:
 else:
     args.stage1_model="m-a-p/YuE-s1-7B-anneal-en-cot"
 
-args.stage2_batch_size=12 if profile==1 else 4
+args.stage2_batch_size= [20,20,20,4,3,2][profile]   
 
 if sdpa:
     attn_implementation="sdpa"
