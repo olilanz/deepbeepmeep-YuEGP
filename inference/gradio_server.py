@@ -719,7 +719,7 @@ def create_demo():
                     lyrics_file = f.read()
                 # lyrics_file.replace("\n", "\n\r")
 
-                genres_input = gr.Text(label="Genres Prompt (one Genres Prompt per line for multiple generations)", value="inspiring female uplifting pop airy vocal electronic bright vocal", lines=3) 
+                genres_input = gr.Text(label="Genres Prompt (one Genres Prompt per line for multiple generations)", value="inspiring female uplifting pop airy vocal electronic bright vocal", lines=3, visible=not use_icl) 
                 lyrics_input = gr.Text(label="Lyrics", lines = 20, value=lyrics_file ) 
                 repeat_generation = gr.Slider(1, 25.0, value=1.0, step=1, label="Number of Generated Songs per Genres Prompt") 
 
