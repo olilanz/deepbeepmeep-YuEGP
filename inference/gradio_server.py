@@ -714,7 +714,7 @@ def create_demo():
         gr.Markdown("<div align=center><H1>YuE<SUP>GP</SUP> v3</div>")
 
         gr.Markdown("<H1><DIV ALIGN=CENTER>YuE is a groundbreaking series of open-source foundation models designed for music generation, specifically for transforming lyrics into full songs (lyrics2song).</DIV></H1>")
-        gr.Markdown("<H2><B>GPU Poor version by DeepBeepMeep.</B> <A HREF='https://github.com/multimodal-art-projection/YuE'>Original Model</A>. Switch to profile 1 for fast generation (requires a 16 GB VRAM GPU), 1 min of song will take only 4 minutes</H2>")
+        gr.Markdown("<H2><B>GPU Poor version by DeepBeepMeep</B> (<A HREF='https://github.com/deepbeepmeep/YuEGP'>Updates</A> / <A HREF='https://github.com/multimodal-art-projection/YuE'>Original</A>). Switch to profile 1 for fast generation (requires a 16 GB VRAM GPU), 1 min of song will take only 4 minutes</H2>")
         if use_icl:
             gr.Markdown("<H3>With In Context Learning Mode in addition to the lyrics and genres info, you can provide audio prompts to describe your expectations. You can generate a song with either: </H3>")
             gr.Markdown("<H3>- a single mixed (song/instruments) Audio track prompt</H3>")
