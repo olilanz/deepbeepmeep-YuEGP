@@ -28,14 +28,11 @@ import gradio as gr
 
 parser = argparse.ArgumentParser()
 # Model Configuration:
-parser.add_argument("--stage1_model", type=str, default="m-a-p/YuE-s1-7B-anneal-en-cot", help="The model checkpoint path or identifier for the Stage 1 model.")
-parser.add_argument("--stage2_model", type=str, default="m-a-p/YuE-s2-1B-general", help="The model checkpoint path or identifier for the Stage 2 model.")
 parser.add_argument("--max_new_tokens", type=int, default=3000, help="The maximum number of new tokens to generate in one pass during text generation.")
 parser.add_argument("--run_n_segments", type=int, default=2, help="The number of segments to process during the generation.")
-parser.add_argument("--stage2_batch_size", type=int, default=4, help="The batch size used in Stage 2 inference.")
 # Prompt
-parser.add_argument("--genre_txt", type=str, help="The file path to a text file containing genre tags that describe the musical style or characteristics (e.g., instrumental, genre, mood, vocal timbre, vocal gender). This is used as part of the generation prompt.")
-parser.add_argument("--lyrics_txt", type=str, help="The file path to a text file containing the lyrics for the music generation. These lyrics will be processed and split into structured segments to guide the generation process.")
+parser.add_argument("--genre_txt", type=str, default="prompt_examples/genrerock.txt", help="The file path to a text file containing genre tags that describe the musical style or characteristics (e.g., instrumental, genre, mood, vocal timbre, vocal gender). This is used as part of the generation prompt.")
+parser.add_argument("--lyrics_txt", type=str, default="prompt_examples/lastxmas.txt", help="The file path to a text file containing the lyrics for the music generation. These lyrics will be processed and split into structured segments to guide the generation process.")
 parser.add_argument("--use_audio_prompt", action="store_true", help="If set, the model will use an audio file as a prompt during generation. The audio file should be specified using --audio_prompt_path.")
 parser.add_argument("--audio_prompt_path", type=str, default="", help="The file path to an audio file to use as a reference prompt when --use_audio_prompt is enabled.")
 parser.add_argument("--prompt_start_time", type=float, default=0.0, help="The start time in seconds to extract the audio prompt from the given audio file.")
@@ -62,9 +59,9 @@ parser.add_argument("--sdpa", action="store_true")
 parser.add_argument("--icl", action="store_true")
 parser.add_argument("--turbo-stage2", action="store_true")
 
-
 args = parser.parse_args()
 
+# set up arguments
 profile = args.profile
 compile = args.compile
 sdpa = args.sdpa
@@ -77,20 +74,12 @@ else:
 
 args.stage2_model="m-a-p/YuE-s2-1B-general"
 
-args.genre_txt="prompt_examples/genrerock.txt"
-args.lyrics_txt="prompt_examples/lastxmas.txt"
-args.run_n_segments=2
-
 args.stage2_batch_size= [20,20,20,4,3,2][profile]   
-args.output_dir= "./output"
-args.cuda_idx =  0
-args.max_new_tokens = 3000 
 
 if sdpa:
     attn_implementation="sdpa"
 else:
     attn_implementation="flash_attention_2"
-
 
 if args.use_audio_prompt and not args.audio_prompt_path:
     raise FileNotFoundError("Please offer audio prompt filepath using '--audio_prompt_path', when you enable 'use_audio_prompt'!")
@@ -199,7 +188,7 @@ def stage1_inference(genres, lyrics_input, run_n_segments, max_new_tokens, rando
     genres = genres.strip()
 
     lyrics = split_lyrics(lyrics_input)
-    # intruction
+    # instruction
     full_lyrics = "\n".join(lyrics)
     prompt_texts = [f"Generate music from the given lyrics segment by segment.\n[Genre] {genres}\n{full_lyrics}"]
     prompt_texts += lyrics
@@ -805,4 +794,3 @@ if __name__ == "__main__":
     demo = create_demo()
 
     demo.launch(server_name=server_name, server_port=server_port, allowed_paths=[args.output_dir])
- 
