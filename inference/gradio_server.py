@@ -58,6 +58,10 @@ parser.add_argument("--compile", action="store_true")
 parser.add_argument("--sdpa", action="store_true")
 parser.add_argument("--icl", action="store_true")
 parser.add_argument("--turbo-stage2", action="store_true")
+# Gradio server
+parser.add_argument("--server_name", type=str, default="0.0.0.0", help="The server name for the wWbUI. By default it exposes the service to all network interfaces. Set to localhost, if you want to restrict access to the local machine.")
+parser.add_argument("--server_port", type=int, default=7860, help="The port number for the WebUI.")
+
 
 args = parser.parse_args()
 
@@ -780,16 +784,7 @@ def create_demo():
 
 if __name__ == "__main__":
     os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"
-    server_port = 0 # int(args.server_port)
 
-    if server_port == 0:
-        server_port = int(os.getenv("SERVER_PORT", "7860"))
-
-    # server_name = args.server_name
-    if len(server_name) == 0:
-        server_name = os.getenv("SERVER_NAME", "0.0.0.0")
-
-        
     demo = create_demo()
 
-    demo.launch(server_name=server_name, server_port=server_port, allowed_paths=[args.output_dir])
+    demo.launch(server_name=args.server_name, server_port=args.server_port, allowed_paths=[args.output_dir])
