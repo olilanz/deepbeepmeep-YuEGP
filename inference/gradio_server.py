@@ -786,7 +786,6 @@ if __name__ == "__main__":
         server_port = int(os.getenv("SERVER_PORT", "7860"))
 
     # server_name = args.server_name
-    server_name = "localhost"
     if len(server_name) == 0:
         server_name = os.getenv("SERVER_NAME", "0.0.0.0")
 
