@@ -793,5 +793,5 @@ if __name__ == "__main__":
     demo.launch(
         server_name=args.server_name, 
         server_port=args.server_port, 
-        auth, 
+        auth=auth, 
         allowed_paths=[args.output_dir])
