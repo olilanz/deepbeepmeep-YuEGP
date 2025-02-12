@@ -145,7 +145,14 @@ Create a Venv or use Conda and Install torch 2.5.1 with Cuda 12.4 :
 pip install torch==2.5.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/test/cu124
 ```
 
-Install dependencies with the following command:
+Alternatively if you have an AMD GPU please do the following (many thanks to Hackey for sharing these install instructions): 
+```
+pip3 install torch torchaudio triton --index-url https://download.pytorch.org/whl/rocm6.2
+TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 python gradio_server.py --profile 1 --sdpa
+```
+
+
+Then install dependencies with the following command:
 
 ```
 pip install -r requirements.txt
