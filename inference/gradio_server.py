@@ -5,7 +5,6 @@ sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'xcodec
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'xcodec_mini_infer', 'descriptaudiocodec'))
 import re
 import random
-import uuid
 import copy
 from tqdm import tqdm
 from collections import Counter
@@ -14,6 +13,7 @@ import numpy as np
 import torch
 import torchaudio
 import time
+from datetime import datetime
 from torchaudio.transforms import Resample
 import soundfile as sf
 from einops import rearrange
@@ -186,7 +186,18 @@ def split_lyrics(lyrics):
     structured_lyrics = [f"[{seg[0]}]\n{seg[1].strip()}\n\n" for seg in segments]
     return structured_lyrics
 
-def stage1_inference(genres, lyrics_input, run_n_segments, max_new_tokens, random_id, state = None, callback = None):
+def get_song_id(seed, genres, top_p, temperature, repetition_penalty, max_new_tokens):
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  
+
+    genres = re.sub(r'[^a-zA-Z0-9_-]', '_', genres.replace(' ', '-'))
+    genres = re.sub(r'_+', '_', genres).strip('_')
+    genres = genres[:180]
+    
+    song_id = f"{timestamp}_{genres}_tp{top_p}_T{temperature}_rp{repetition_penalty}_maxtk{max_new_tokens}_s{seed}"
+ 
+    return song_id[:240]
+
+def stage1_inference(genres, lyrics_input, run_n_segments, max_new_tokens, seed, state = None, callback = None):
     # Tips:
     # genre tags support instrumental，genre，mood，vocal timbr and vocal gender
     # all kinds of tags are needed
@@ -294,9 +305,9 @@ def stage1_inference(genres, lyrics_input, run_n_segments, max_new_tokens, rando
         instrumentals.append(instrumentals_ids)
     vocals = np.concatenate(vocals, axis=1)
     instrumentals = np.concatenate(instrumentals, axis=1)
-    output_filename_base = f"{genres.replace(' ', '-')[:150]}_tp{top_p}_T{temperature}_rp{repetition_penalty}_maxtk{max_new_tokens}_{random_id}".replace('.', '@')
-    vocal_save_path = os.path.join(stage1_output_dir, f"{output_filename_base}_vtrack.npy")
-    inst_save_path = os.path.join(stage1_output_dir, f"{output_filename_base}_itrack.npy")
+    song_id = get_song_id(seed, genres, top_p, temperature, repetition_penalty, max_new_tokens)
+    vocal_save_path = os.path.join(stage1_output_dir, f"{song_id}_vtrack.npy")
+    inst_save_path = os.path.join(stage1_output_dir, f"{song_id}_itrack.npy")
     np.save(vocal_save_path, vocals)
     np.save(inst_save_path, instrumentals)
     stage1_output_set = []
@@ -472,8 +483,6 @@ def stage2_inference(model, stage1_output_set, stage2_output_dir, batch_size=4, 
         stage2_result.append(output_filename)
     return stage2_result
 
-
-    
 def build_callback(state,  progress, status ):
     def callback(tokens_processed, max_tokens):
         prefix = state["prefix"]
@@ -506,13 +515,11 @@ def refresh_gallery(state):
     else:
         return None, file_list
 
-        
 def finalize_gallery(state):
     if "in_progress" in state:
         del state["in_progress"]
     time.sleep(0.2)
     return gr.Button(interactive=  True)
-
 
 def generate_song(genres_input, lyrics_input, run_n_segments, seed, max_new_tokens, vocal_track_prompt, instrumental_track_prompt, prompt_start_time, prompt_end_time, repeat_generation, state, progress=gr.Progress()):
     args.use_audio_prompt = False
@@ -526,8 +533,6 @@ def generate_song(genres_input, lyrics_input, run_n_segments, seed, max_new_toke
     file_list= state.get("file_list", []) 
     if len(file_list) == 0: 
         state["file_list"] = file_list    
-
-
 
     if use_icl:
         if prompt_start_time > prompt_end_time:
@@ -574,13 +579,12 @@ def generate_song(genres_input, lyrics_input, run_n_segments, seed, max_new_toke
 
             torch.cuda.manual_seed(seed)
             random.seed(seed)
-            random_id = uuid.uuid4()
 
-            callback = build_callback(state,  progress, status)
+            callback = build_callback(state, progress, status)
 
             # if True:
             try:
-                stage1_output_set = stage1_inference(genres, lyrics_input, run_n_segments, max_new_tokens, random_id, state, callback)
+                stage1_output_set = stage1_inference(genres, lyrics_input, run_n_segments, max_new_tokens, state, callback)
 
                 # random_id ="5b4b4613-1cc2-4d84-af7a-243f853f168b"
                 # stage1_output_set = [ "output/stage1/inspiring-female-uplifting-pop-airy-vocal-electronic-bright-vocal_tp0@93_T1@0_rp1@2_maxtk3000_5b4b4613-1cc2-4d84-af7a-243f853f168b_vtrack.npy", 
