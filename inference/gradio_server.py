@@ -61,7 +61,8 @@ parser.add_argument("--turbo-stage2", action="store_true")
 # Gradio server
 parser.add_argument("--server_name", type=str, default="0.0.0.0", help="The server name for the wWbUI. By default it exposes the service to all network interfaces. Set to localhost, if you want to restrict access to the local machine.")
 parser.add_argument("--server_port", type=int, default=7860, help="The port number for the WebUI.")
-
+parser.add_argument("--server_user", type=str, default="", help="Enables basic authentication to the server. If specified, this user name is required to access the server.")
+parser.add_argument("--server_password", type=str, default="", help="If basic authentication is enabled, this password will be required to access the server.")
 
 args = parser.parse_args()
 
@@ -785,6 +786,12 @@ def create_demo():
 if __name__ == "__main__":
     os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"
 
-    demo = create_demo()
+    # basic authentication, if user is defined
+    auth = [(args.server_user, args.server_password)] if args.server_user else None
 
-    demo.launch(server_name=args.server_name, server_port=args.server_port, allowed_paths=[args.output_dir])
+    demo = create_demo()
+    demo.launch(
+        server_name=args.server_name, 
+        server_port=args.server_port, 
+        auth, 
+        allowed_paths=[args.output_dir])
