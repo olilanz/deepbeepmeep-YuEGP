@@ -185,13 +185,13 @@ def split_lyrics(lyrics):
     return structured_lyrics
 
 def get_song_id(seed, genres, top_p, temperature, repetition_penalty, max_new_tokens):
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M-%S.%f")[:-3]  
 
     genres = re.sub(r'[^a-zA-Z0-9_-]', '_', genres.replace(' ', '-'))
     genres = re.sub(r'_+', '_', genres).strip('_')
     genres = genres[:180]
     
-    song_id = f"{timestamp}_{genres}_tp{top_p}_T{temperature}_rp{repetition_penalty}_maxtk{max_new_tokens}_s{seed}"
+    song_id = f"{timestamp}_{genres}_seed{seed}_tp{top_p}_T{temperature}_rp{repetition_penalty}_maxtk{max_new_tokens}"
  
     return song_id[:240]
 
