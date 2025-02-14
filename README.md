@@ -199,7 +199,7 @@ Without the optimizations, YuE requires significant GPU memory for generating lo
 
 If you have out of memory errors while a lot memory still seems to be free,  please try the following before lauching the app (many thanks to olilanz for this finding)  :  
 ```
-export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 ```
 
 
