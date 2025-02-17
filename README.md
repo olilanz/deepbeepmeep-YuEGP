@@ -126,7 +126,7 @@ A flux derived image generator that will allow you to transfer an object of your
 # Installation instructions
 
 
-Python >=3.10 is recommended.
+Python 3.10 is recommended as some issues have been reported on python 3.12 and 3.13. Python 3.11 might work as well. 
 
 ##  1) Install source code
 Make sure you have git-lfs installed (https://git-lfs.com)
@@ -145,7 +145,14 @@ Create a Venv or use Conda and Install torch 2.5.1 with Cuda 12.4 :
 pip install torch==2.5.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/test/cu124
 ```
 
-Install dependencies with the following command:
+Alternatively if you have an AMD GPU please do the following (many thanks to Hackey for sharing these install instructions): 
+```
+pip3 install torch torchaudio triton --index-url https://download.pytorch.org/whl/rocm6.2
+TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 python gradio_server.py --profile 1 --sdpa
+```
+
+
+Then install dependencies with the following command:
 
 ```
 pip install -r requirements.txt
@@ -188,7 +195,15 @@ patchtransformers.bat
 ```
 ## GPU Memory Usage and Sessions
 
-Without the optimizations, YuE requires significant GPU memory for generating long sequences. Below are the recommended configurations:
+Without the optimizations, YuE requires significant GPU memory for generating long sequences. 
+
+If you have out of memory errors while a lot memory still seems to be free,  please try the following before lauching the app (many thanks to olilanz for this finding)  :  
+```
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+```
+
+
+Below are the recommended configurations:
 
 - **For GPUs with 24GB memory or less**: Run **up to 2 sessions** concurrently to avoid out-of-memory (OOM) errors.
 - **For full song generation** (many sessions, e.g., 4 or more): Use **GPUs with at least 80GB memory**. This can be achieved by combining multiple GPUs and enabling tensor parallelism.

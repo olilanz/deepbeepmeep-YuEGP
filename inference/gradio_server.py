@@ -59,7 +59,7 @@ parser.add_argument("--sdpa", action="store_true")
 parser.add_argument("--icl", action="store_true")
 parser.add_argument("--turbo-stage2", action="store_true")
 # Gradio server
-parser.add_argument("--server_name", type=str, default="0.0.0.0", help="The server name for the wWbUI. By default it exposes the service to all network interfaces. Set to localhost, if you want to restrict access to the local machine.")
+parser.add_argument("--server_name", type=str, default="localhost", help="The server name for the wWbUI. By default it exposes the service to all network interfaces. Set to localhost, if you want to restrict access to the local machine.")
 parser.add_argument("--server_port", type=int, default=7860, help="The port number for the WebUI.")
 
 args = parser.parse_args()
